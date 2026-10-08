@@ -9,9 +9,10 @@ import numpy as np
 
 from IPython.core.magic import (Magics, magics_class, line_magic, cell_magic)
 
-TRACKED_VARIABLES = {}  # tracked variables, converted to CSV strings
 DEFAULT_IP = "127.0.0.1"
 DEFAULT_PORT = 10000
+DEFAULT_DELIMITER = ','
+DEFAULT_HEADER = False
 
 # New exceptions
 class LinterConnectionError(Exception):
@@ -34,9 +35,9 @@ def _parse_delimiter(value, default=','):
 
 @magics_class
 class DataLinterMagic(Magics):
-    tracked_variable = None
-    data_header = None
-    data_delim = None
+    all_tracked_variables = {}  # tracked variables, converted to CSV strings
+    data_header = DEFAULT_HEADER
+    data_delim = DEFAULT_DELIMITER
     ip = DEFAULT_IP
     port = DEFAULT_PORT
     show_stats = False
@@ -66,7 +67,7 @@ class DataLinterMagic(Magics):
 
     def __parse_lint_magic(self, line):
         try:
-            parser = argparse.ArgumentParser()
+            parser = argparse.ArgumentParser(exit_on_error=False)
             parser.add_argument("tracked_variable", nargs='?', default=None)  # used only when linting lines
             parser.add_argument("--ip")
             parser.add_argument("--port")
@@ -91,9 +92,8 @@ class DataLinterMagic(Magics):
             show_na = args.show_na
             show_passing = args.show_passing
             return tracked_variable, ip, port, show_stats, show_na, show_passing
-        except Exception as ex:
-            print(f"Warning (Linter): Could not parse line for linting cell magic:\n\t{ex}")  # noqa: E501
-            return None
+        except argparse.ArgumentTypeError as ex:
+            raise ValueError(f"Could not parse line for linting cell magic: {ex}") from ex
 
     @line_magic
     def add(self, line):
@@ -105,8 +105,8 @@ class DataLinterMagic(Magics):
                 # Support only for: numpy.array and pandas.dataframe
                 v = ipy.ev(tracked_variable)
                 v_delimited = self.to_csv_string(v, header=data_header, delimiter=data_delim)
-                TRACKED_VARIABLES[tracked_variable] = (v_delimited, data_header, data_delim)
-                print(f">>DEBUG: Added '{tracked_variable}' as delimited string to tracked variables.")  # noqa: E500
+                self.all_tracked_variables[tracked_variable] = (v_delimited, data_header, data_delim)
+                #print(f">>DEBUG: Added '{tracked_variable}' as delimited string to tracked variables.")  # noqa: E500
             except Exception as ex:
                 print(f"Warning (Linter): Could not add '{tracked_variable}' to linter data:\n\t{ex}")  # noqa: E501
         return None
@@ -116,15 +116,15 @@ class DataLinterMagic(Magics):
         parsed_args = self.__parse_lint_magic(line)
         ipy = IPython.get_ipython()
         if parsed_args is not None:
-            for tv in TRACKED_VARIABLES.keys():
-                if tv not in self.shell.user_ns:
-                    v, header, delimiter = self.shell.user_ns[tv]
-                    TRACKED_VARIABLES[tv] = self.to_csv_string(v, header, delimiter)
             # Build request body for linter
-            tracked_variable, self.ip, self.port, self.show_stats, self.show_na, \
-                self.show_passing = parsed_args
-            if tracked_variable in TRACKED_VARIABLES.keys():
-                _data, _header, _delim = TRACKED_VARIABLES[tracked_variable]
+            tracked_variable, self.ip, self.port, self.show_stats, self.show_na, self.show_passing = parsed_args
+            if tracked_variable is not None and tracked_variable in self.all_tracked_variables.keys():
+                # Update data variable from local namespace (uses the same delimiter, header)
+                if tracked_variable in self.shell.user_ns:
+                    _, _header, _delim = self.all_tracked_variables[tracked_variable]
+                    v = self.shell.user_ns[tracked_variable]
+                    self.all_tracked_variables[tracked_variable] = (self.to_csv_string(v, _header, _delim), _header, _delim)
+                _data, _header, _delim = self.all_tracked_variables[tracked_variable]
                 varbody = {
                             'linter_input': {
                                 'context': {
@@ -151,8 +151,8 @@ class DataLinterMagic(Magics):
                     )
                 except Exception as ex:
                     print(f"Warning (Linter): Failed to read linter output (perhaps linting failed):\n\t{ex}")  # noqa: E501
-            else:
-                print(f">>DEBUG: '%lintline' magic FAILED (parsed_args={parsed_args})")  # noqa: E501
+            #else:
+            #    print(f">>DEBUG: '%lintline' magic FAILED (parsed_args={parsed_args})")  # noqa: E501
         return None
 
     # Note: It would be interesting to Investigate when to execute the linter (before of after cell execution)
@@ -162,19 +162,19 @@ class DataLinterMagic(Magics):
     def lintcell(self, line, cell):
         parsed_args = self.__parse_lint_magic(line)
         ipy = IPython.get_ipython()
-        # Check again for variable changes (re-bindings)
-        for tv in TRACKED_VARIABLES.keys():
-            if tv not in self.shell.user_ns:
-                v, header, delimiter = self.shell.user_ns[tv]
-                TRACKED_VARIABLES[tv] = self.to_csv_string(v, header, delimiter)
         # Build request body for linter
         if parsed_args is not None:
-            _, self.ip, self.port, self.show_stats, self.show_na, \
-                self.show_passing = parsed_args
+            _, self.ip, self.port, self.show_stats, self.show_na, self.show_passing = parsed_args
+            # Check again for variable changes (re-bindings) and update all variables
+            for tv in self.all_tracked_variables.keys():
+                if tv in self.shell.user_ns:
+                    _, _header, _delim = self.all_tracked_variables[tv]
+                    v = self.shell.user_ns[tv]
+                    self.all_tracked_variables[tv] = (self.to_csv_string(v, _header, _delim), _header, _delim)
             varbody = {
                         'linter_input': {
                             'context': {
-                                'data': TRACKED_VARIABLES,
+                                'data': self.all_tracked_variables,
                                 'data_delim': self.data_delim,
                                 'data_header': self.data_header,
                                 'code': cell},
@@ -197,8 +197,8 @@ class DataLinterMagic(Magics):
                 )
             except Exception as ex:
                 print(f"Warning (Linter): Failed to read linter output (perhaps linting failed):\n\t{ex}")  # noqa: E501
-        else:
-            print(f">>DEBUG: '%%lintcell' magic FAILED (parsed_args={parsed_args})")  # noqa: E501
+        #else:
+        #    print(f">>DEBUG: '%%lintcell' magic FAILED (parsed_args={parsed_args})")  # noqa: E501
         # Run cell (or self.shell.ex(cell) if you only want side effects)
         result = self.shell.run_cell(cell)
         return result.result
@@ -216,9 +216,11 @@ class DataLinterMagic(Magics):
         return self.dataframe_to_csv_string(df, header=header, delimiter=delimiter)
 
     def dataframe_to_csv_string(self, df, header, delimiter):
+        if df.empty:
+            return ""
         _header = None
         _colnames = list(df.columns)
-        _str_colnames = isinstance(_colnames[0], str)
+        _str_colnames = _colnames and isinstance(_colnames[0], str)
         if header is True and _str_colnames:
             _header = _colnames
         elif header is True and not _str_colnames:
@@ -256,8 +258,11 @@ class DataLinterMagic(Magics):
             ) from ex
         finally:
             conn.close()
-        text = raw.decode("utf-8", errors="replace")
-        if status != 200:
-            raise LinterHTTPError(status, reason, text)
-        parsed = json.loads(text)
-        return parsed
+        try:
+            text = raw.decode("utf-8", errors="replace")
+            if status != 200:
+                raise LinterHTTPError(status, reason, text)
+            parsed = json.loads(text)
+            return parsed
+        except json.JSONDecodeError as ex:
+            raise LinterConnectionError(f"Invalid JSON from server: {ex}") from ex
