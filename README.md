@@ -16,6 +16,7 @@ Make sure you have up-to-date stable versions of [IPython](https://ipython.org/)
 The Jupyter magic can be installed with
 ```
 pip install datalintermagic
+python -m pip install datalintermagic
 ```
 
 ### DataLinter

@@ -7,12 +7,12 @@ name = "datalintermagic"
 version = "0.0.2"
 description = "Jupyter magic for DataLinter"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [{name = "Corneliu Cofaru", email = "cornel@oxoaresearch.com"}]
 keywords = ["datalinter", "ipython", "magic", "linting"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: GNU GPL v3 License",
     "Operating System :: OS Independent",
 ]
 requires-python = ">=3.8"
