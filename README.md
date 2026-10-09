@@ -4,6 +4,8 @@ This is a Ipython magic that allows one to run [DataLinter](https://github.com/z
 
 [![License](http://img.shields.io/badge/license-GPL-brightgreen.svg?style=flat)](LICENSE)
 
+[![tests](https://github.com/zgornel/Ipython-datalinter/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/zgornel/Ipython-datalinter/actions/workflows/tests.yml?query=branch%3Amain)
+
 ![til](./gifs/jupyter.gif)
 
 ## Installation
