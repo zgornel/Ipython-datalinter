@@ -2,10 +2,10 @@
 
 This is a Ipython magic that allows one to run [DataLinter](https://github.com/zgornel/DataLinter) in Jupyter notebooks.
 
-[![License](http://img.shields.io/badge/license-GPL-brightgreen.svg?style=flat)](LICENSE)
-
+[![License](https://img.shields.io/pypi/l/datalintermagic)](https://pypi.org/project/datalintermagic/)
 [![tests](https://github.com/zgornel/Ipython-datalinter/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/zgornel/Ipython-datalinter/actions/workflows/tests.yml?query=branch%3Amain)
-
+[![PyPI version](https://img.shields.io/pypi/v/datalintermagic)](https://pypi.org/project/datalintermagic/)
+[![Python versions](https://img.shields.io/pypi/pyversions/datalintermagic)](https://pypi.org/project/datalintermagic/)
 ![til](./gifs/jupyter.gif)
 
 ## Installation
