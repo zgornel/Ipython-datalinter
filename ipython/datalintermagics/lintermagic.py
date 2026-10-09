@@ -35,16 +35,12 @@ def _parse_delimiter(value, default=','):
 
 @magics_class
 class DataLinterMagic(Magics):
-    all_tracked_variables = {}  # tracked variables, converted to CSV strings
-    data_header = DEFAULT_HEADER
-    data_delim = DEFAULT_DELIMITER
-    ip = DEFAULT_IP
-    port = DEFAULT_PORT
-    show_stats = False
-    show_na = False
-    show_passing = False
+    def __init__(self, shell):
+        super().__init__(shell)
+        self.all_tracked_variables = {}  # tracked variables, converted to CSV strings
 
-    def __parse_add_magic(self, line):
+    @staticmethod
+    def _parse_add_magic(line):
         try:
             parser = argparse.ArgumentParser()
             parser.add_argument("--tracked-variable")
@@ -65,7 +61,8 @@ class DataLinterMagic(Magics):
             print(f"Warning (Linter): Could not parse line for %%add line magic:\n\t{ex}")  # noqa: E501
             return None
 
-    def __parse_lint_magic(self, line):
+    @staticmethod
+    def _parse_lint_magic(line):
         try:
             parser = argparse.ArgumentParser(exit_on_error=False)
             parser.add_argument("tracked_variable", nargs='?', default=None)  # used only when linting lines
@@ -76,16 +73,16 @@ class DataLinterMagic(Magics):
             parser.add_argument("--show-passing", action='store_true')
             args = parser.parse_args(shlex.split(line))
             tracked_variable = args.tracked_variable
-            # IP
+            # ip
             try:
-                ip = args.ip if args.ip is not None else DEFAULT_IP
-                socket.inet_aton(ip) # check legal ip
-            except socket.error:
+                ip = socket.inet_aton(args.ip) if args.ip is not None else DEFAULT_IP
+            except socket.error as exc:
                 # Not legal
-                raise ValueError(f"The IP '{ip!r}' is not valid")
+                raise ValueError(f"The IP '{args.ip!r}' is not valid") from exc
+            # port
             try:
                 port = int(args.port) if args.port is not None else DEFAULT_PORT
-                assert port > 0 and port < 65535, "Invalid port value. Needs to be an integer between 1 and 65535"
+                assert 1 <= port <= 65535, "Invalid port value. Needs to be an integer between 1 and 65535"
             except Exception as ex:
                 raise ValueError(f"{ex}")
             show_stats = args.show_stats
@@ -97,7 +94,7 @@ class DataLinterMagic(Magics):
 
     @line_magic
     def add(self, line):
-        parsed_args = self.__parse_add_magic(line)
+        parsed_args = self._parse_add_magic(line)
         ipy = IPython.get_ipython()
         if parsed_args is not None:
             tracked_variable, data_header, data_delim = parsed_args  # noqa: E501
@@ -113,11 +110,10 @@ class DataLinterMagic(Magics):
 
     @line_magic
     def lintline(self, line):
-        parsed_args = self.__parse_lint_magic(line)
-        ipy = IPython.get_ipython()
+        parsed_args = self._parse_lint_magic(line)
         if parsed_args is not None:
             # Build request body for linter
-            tracked_variable, self.ip, self.port, self.show_stats, self.show_na, self.show_passing = parsed_args
+            tracked_variable, ip, port, show_stats, show_na, show_passing = parsed_args
             if tracked_variable is not None and tracked_variable in self.all_tracked_variables.keys():
                 # Update data variable from local namespace (uses the same delimiter, header)
                 if tracked_variable in self.shell.user_ns:
@@ -133,14 +129,14 @@ class DataLinterMagic(Magics):
                                     'data_header': _header,
                                     'code': ''},
                                 'options': {
-                                    'show_stats': self.show_stats,
-                                    'show_passing': self.show_passing,
-                                    'show_na': self.show_na}
+                                    'show_stats': show_stats,
+                                    'show_passing': show_passing,
+                                    'show_na': show_na}
                             }
                         }
                 jsonbody = json.dumps(varbody).encode("utf-8")
                 try:
-                    linter_response = self.http_lint_request(self.ip, self.port, jsonbody)
+                    linter_response = self.http_lint_request(ip, port, jsonbody)
                     print(f"Linter output\n-------------\n{linter_response['linting_output']}")
                 except LinterConnectionError as ex:
                     print(f"Warning (Linter): Cannot reach server:\n\t{ex}")
@@ -160,11 +156,10 @@ class DataLinterMagic(Magics):
     #       Currently, linting is done BEFORE cell execution and is non-blocking
     @cell_magic
     def lintcell(self, line, cell):
-        parsed_args = self.__parse_lint_magic(line)
-        ipy = IPython.get_ipython()
+        parsed_args = self._parse_lint_magic(line)
         # Build request body for linter
         if parsed_args is not None:
-            _, self.ip, self.port, self.show_stats, self.show_na, self.show_passing = parsed_args
+            _, ip, port, show_stats, show_na, show_passing = parsed_args
             # Check again for variable changes (re-bindings) and update all variables
             for tv in self.all_tracked_variables.keys():
                 if tv in self.shell.user_ns:
@@ -175,18 +170,17 @@ class DataLinterMagic(Magics):
                         'linter_input': {
                             'context': {
                                 'data': self.all_tracked_variables,
-                                'data_delim': self.data_delim,
-                                'data_header': self.data_header,
+                                # 'data_delim' and 'data_header' are not passed, each variable has its own
                                 'code': cell},
                             'options': {
-                                'show_stats': self.show_stats,
-                                'show_passing': self.show_passing,
-                                'show_na': self.show_na}
+                                'show_stats': show_stats,
+                                'show_passing': show_passing,
+                                'show_na': show_na}
                         }
                     }
             jsonbody = json.dumps(varbody).encode("utf-8")
             try:
-                linter_response = self.http_lint_request(self.ip, self.port, jsonbody)
+                linter_response = self.http_lint_request(ip, port, jsonbody)
                 print(f"Linter output\n-------------\n{linter_response['linting_output']}")
             except LinterConnectionError as ex:
                 print(f"Warning (Linter): Cannot reach server:\n\t{ex}")
