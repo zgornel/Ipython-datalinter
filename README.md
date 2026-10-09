@@ -1,31 +1,31 @@
 # IPython plugin for DataLinter
 
-This is a Ipython magic that allows one to run [DataLinter](https://github.com/zgornel/DataLinter) in Jupyter notebooks.
-
 [![License](https://img.shields.io/pypi/l/datalintermagic)](https://pypi.org/project/datalintermagic/)
 [![tests](https://github.com/zgornel/Ipython-datalinter/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/zgornel/Ipython-datalinter/actions/workflows/tests.yml?query=branch%3Amain)
 [![PyPI version](https://img.shields.io/pypi/v/datalintermagic)](https://pypi.org/project/datalintermagic/)
 [![Python versions](https://img.shields.io/pypi/pyversions/datalintermagic)](https://pypi.org/project/datalintermagic/)
 ![til](./gifs/jupyter.gif)
 
+This is a Ipython magic that allows one to run [DataLinter](https://github.com/zgornel/DataLinter) in Jupyter notebooks.
+
 ## Installation
 
-Make sure you have up-to-date stable versions of [IPython](https://ipython.org/) and [Jupyter](https://jupyter.org/).
+Make sure you have up-to-date stable versions of [IPython](https://ipython.org/) and [Jupyter](https://jupyter.org/). In order for the linter to work, both the Jupyter plugin and DataLinter (server in a Docker image) need to be installed in the system.
 
-### The Jupyter magic
-The Jupyter magic can be installed with
+### Jupyter plugin package
+
+The Jupyter plugin can be installed with `pip`:
 ```
 pip install datalintermagic
-python -m pip install datalintermagic
 ```
 
 ### DataLinter
 
-Install [DataLinter](https://github.com/zgornel/DataLinter) by pulling the Docker image:
+[DataLinter](https://github.com/zgornel/DataLinter) installation is done with:
 ```
 docker pull ghcr.io/zgornel/datalinter-compiled:latest
 ```
-and start it with:
+The command to start the linting server is:
 ```
 docker run -it --rm -p10000:10000 \
     ghcr.io/zgornel/datalinter-compiled:latest \
