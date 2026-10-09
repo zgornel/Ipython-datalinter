@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools >= 45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "datalintermagic"
+version = "0.0.2"
+description = "Jupyter magic for DataLinter"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{name = "Corneliu Cofaru", email = "cornel@oxoaresearch.com"}]
+keywords = ["datalinter", "ipython", "magic", "linting"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.8"
+dependencies = ["pandas", "numpy", "IPython"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/zgornel/Ipython-datalinter"
+"Bug Tracker" = "https://github.com/zgornel/Ipython-datalinter/issues"
+
+[tool.setuptools]
+packages = ["datalintermagic"]            # Auto-discovery alternative: use find = {where = ["src"]}
+package-dir = {"" = "src"}
+
+[tool.setuptools.package-data]
+"my_package" = ["*.txt", "*.json"]  # Include non-Python files if needed
