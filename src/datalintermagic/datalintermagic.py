@@ -9,6 +9,8 @@ import http.client
 import numpy as np
 
 from IPython.core.magic import (Magics, magics_class, line_magic, cell_magic)
+from IPython.display import display, Pretty
+
 
 DEFAULT_IP = "127.0.0.1"
 DEFAULT_PORT = 10000
@@ -43,29 +45,33 @@ class DataLinterMagic(Magics):
     @staticmethod
     def _parse_add_magic(line):
         try:
-            parser = argparse.ArgumentParser(exit_on_error=False)
+            parser = argparse.ArgumentParser(exit_on_error=False, add_help=False)
             parser.add_argument("--tracked-variable")
             parser.add_argument("--data-header", action='store_true')
             parser.add_argument("--data-delim")
             args = parser.parse_args(shlex.split(line))
             # tracked variable checks
             if args.tracked_variable is None:
-                print("Warning (Linter): Use '--tracked-variable' to specify a data variable!")  # noqa: E501
+                display(Pretty("Warning (Linter): Use '--tracked-variable' to specify a data variable!"))  # noqa: E501
                 return None
-            tracked_variable = args.tracked_variable
+            elif str.isidentifier(args.tracked_variable) is False:
+                display(Pretty("Warning (Linter): Ivalid identifier specified with '--tracked-variable'"))  # noqa: E501
+                return None
+            else:
+                tracked_variable = args.tracked_variable
             # data header checks
             data_header = args.data_header
             # data delimiter checks
             data_delim = _parse_delimiter(args.data_delim)
             return tracked_variable, data_header, data_delim
         except Exception as ex:
-            print(f"Warning (Linter): Could not parse line for %%add line magic:\n\t{ex}")  # noqa: E501
+            display(Pretty(f"Warning (Linter): Line parse error:\n\t{ex}"))
             return None
 
     @staticmethod
     def _parse_lint_magic(line):
         try:
-            parser = argparse.ArgumentParser(exit_on_error=False)
+            parser = argparse.ArgumentParser(exit_on_error=False, add_help=False)
             parser.add_argument("tracked_variable", nargs='?', default=None)  # used only when linting lines
             parser.add_argument("--ip")
             parser.add_argument("--port")
@@ -91,8 +97,9 @@ class DataLinterMagic(Magics):
             show_na = args.show_na
             show_passing = args.show_passing
             return tracked_variable, ip, port, show_stats, show_na, show_passing
-        except argparse.ArgumentTypeError as ex:
-            raise ValueError(f"Could not parse line for linting cell magic: {ex}") from ex
+        except Exception as ex:
+            display(Pretty(f"Warning (Linter): Line parse error:\n\t{ex}"))
+            return None
 
     @line_magic
     def add(self, line):
@@ -103,11 +110,13 @@ class DataLinterMagic(Magics):
             try:
                 # Support only for: numpy.array and pandas.dataframe
                 v = ipy.ev(tracked_variable)
-                v_delimited = self.to_csv_string(v, header=data_header, delimiter=data_delim)
+                v_delimited = self.to_csv_string(v, header=data_header, delimiter=data_delim, symbol=tracked_variable)
                 self.all_tracked_variables[tracked_variable] = (v_delimited, data_header, data_delim)
-                #print(f">>DEBUG: Added '{tracked_variable}' as delimited string to tracked variables.")  # noqa: E500
+                #display(f">>DEBUG: Added '{tracked_variable}' as delimited string to tracked variables.")  # noqa: E500
             except Exception as ex:
-                print(f"Warning (Linter): Could not add '{tracked_variable}' to linter data:\n\t{ex}")  # noqa: E501
+                display(Pretty(f"Warning (Linter): Could not add '{tracked_variable}' to linter data:\n\t{ex}"))  # noqa: E501
+        else:
+            display(Pretty(f"Warning (Linter): Could not parse line for '%add' magic"))  # noqa: E501
         return None
 
     @line_magic
@@ -121,7 +130,7 @@ class DataLinterMagic(Magics):
                 if tracked_variable in self.shell.user_ns:
                     _, _header, _delim = self.all_tracked_variables[tracked_variable]
                     v = self.shell.user_ns[tracked_variable]
-                    self.all_tracked_variables[tracked_variable] = (self.to_csv_string(v, _header, _delim), _header, _delim)
+                    self.all_tracked_variables[tracked_variable] = (self.to_csv_string(v, _header, _delim, tracked_variable), _header, _delim)
                 _data, _header, _delim = self.all_tracked_variables[tracked_variable]
                 varbody = {
                             'linter_input': {
@@ -139,18 +148,20 @@ class DataLinterMagic(Magics):
                 jsonbody = json.dumps(varbody).encode("utf-8")
                 try:
                     linter_response = self.http_lint_request(ip, port, jsonbody)
-                    print(f"Linter output\n-------------\n{linter_response['linting_output']}")
+                    display(Pretty(f"Linter output\n-------------\n{linter_response['linting_output']}"))
                 except LinterConnectionError as ex:
-                    print(f"Warning (Linter): Cannot reach server:\n\t{ex}")
+                    display(Pretty(f"Warning (Linter): Cannot reach server:\n\t{ex}"))
                 except LinterHTTPError as ex:
-                    print(
+                    display(Pretty(
                         f"Warning (Linter): Server rejected the request "
                         f"(HTTP {ex.status} {ex.reason}):\n\t{ex.body}"
-                    )
+                    ))
                 except Exception as ex:
-                    print(f"Warning (Linter): Failed to read linter output (perhaps linting failed):\n\t{ex}")  # noqa: E501
-            #else:
-            #    print(f">>DEBUG: '%lintline' magic FAILED (parsed_args={parsed_args})")  # noqa: E501
+                    display(Pretty(f"Warning (Linter): Failed to read linter output:\n\t{ex}"))  # noqa: E501
+            else:
+                display(Pretty(f"Warning (Linter): '%lintline' magic needs a valid data symbol"))  # noqa: E501
+        else:
+            display(Pretty(f"Warning (Linter): Could not parse line for '%lintline' magic"))  # noqa: E501
         return None
 
     # Note: It would be interesting to Investigate when to execute the linter (before of after cell execution)
@@ -167,7 +178,7 @@ class DataLinterMagic(Magics):
                 if tv in self.shell.user_ns:
                     _, _header, _delim = self.all_tracked_variables[tv]
                     v = self.shell.user_ns[tv]
-                    self.all_tracked_variables[tv] = (self.to_csv_string(v, _header, _delim), _header, _delim)
+                    self.all_tracked_variables[tv] = (self.to_csv_string(v, _header, _delim, tv), _header, _delim)
             varbody = {
                         'linter_input': {
                             'context': {
@@ -183,53 +194,56 @@ class DataLinterMagic(Magics):
             jsonbody = json.dumps(varbody).encode("utf-8")
             try:
                 linter_response = self.http_lint_request(ip, port, jsonbody)
-                print(f"Linter output\n-------------\n{linter_response['linting_output']}")
+                display(Pretty(f"Linter output\n-------------\n{linter_response['linting_output']}"))
             except LinterConnectionError as ex:
-                print(f"Warning (Linter): Cannot reach server:\n\t{ex}")
+                display(Pretty(f"Warning (Linter): Cannot reach server:\n\t{ex}"))
             except LinterHTTPError as ex:
-                print(
+                display(Pretty(
                     f"Warning (Linter): Server rejected the request "
                     f"(HTTP {ex.status} {ex.reason}):\n\t{ex.body}"
-                )
+                ))
             except Exception as ex:
-                print(f"Warning (Linter): Failed to read linter output (perhaps linting failed):\n\t{ex}")  # noqa: E501
-        #else:
-        #    print(f">>DEBUG: '%%lintcell' magic FAILED (parsed_args={parsed_args})")  # noqa: E501
-        # Run cell (or self.shell.ex(cell) if you only want side effects)
+                display(Pretty(f"Warning (Linter): Failed to read linter output, perhaps linting failed:\n\t{ex}"))  # noqa: E501
+        else:
+            display(Pretty(f"Warning (Linter): Could not parse line for '%lintcell' magic"))  # noqa: E501
+        # Always run cell, regardless of linter status
+        # Also, one can run with `self.shell.ex(cell)` if one only wants side effects
         result = self.shell.run_cell(cell)
         return result.result
 
-    def to_csv_string(self, v, header, delimiter):
+    def to_csv_string(self, v, header, delimiter, symbol=None):
         if isinstance(v, pd.DataFrame):
-            return self.dataframe_to_csv_string(v, header, delimiter)
+            return self.dataframe_to_csv_string(v, header, delimiter, symbol=symbol)
         elif isinstance(v, np.ndarray):
-            return self.ndarray_to_csv_string(v, header, delimiter)
+            return self.ndarray_to_csv_string(v, header, delimiter, symbol=symbol)
         else:
             raise TypeError(f"Unsupported type '{type(v)}' for delimited-string transformation")
 
-    def ndarray_to_csv_string(self, arr, header, delimiter):
+    def ndarray_to_csv_string(self, arr, header, delimiter, symbol=None):
         df = pd.DataFrame(arr)
-        return self.dataframe_to_csv_string(df, header=header, delimiter=delimiter)
+        return self.dataframe_to_csv_string(df, header=header, delimiter=delimiter, symbol=symbol)
 
-    def dataframe_to_csv_string(self, df, header, delimiter):
+    def dataframe_to_csv_string(self, df, header, delimiter, symbol=None):
         if df.empty:
             return ""
         _header = None
         _colnames = list(df.columns)
-        _str_colnames = _colnames and isinstance(_colnames[0], str)
+        _str_colnames = _colnames and all(isinstance(col, str) for col in _colnames)
         if header is True and _str_colnames:
             _header = _colnames
         elif header is True and not _str_colnames:
+            display(Pretty(f"Warning (Linter): Symbol '{symbol}' will be exported with [x0 ... xN] column names"))  # noqa: E501
             _header = ['x'+str(i) for i in range(len(df.columns))]
         else:
-            # header if false, header exported to csv
+            # header is False, header not exported to csv
             pass
         return df.to_csv(None,
                          sep=delimiter,
                          header=_header,
-                         index=False)
+                         index=False,
+                         na_rep="NA")  # Linter supports ["", "NA", "NaN", "N/A", "NAN"]
 
-    def http_lint_request(self, ip, port, body, timeout=300.0, path="/api/lint"):
+    def http_lint_request(self, ip, port, body, timeout=60.0, path="/api/lint"):
         connect_host = DEFAULT_IP if ip in {"0.0.0.0", "::", "[::]"} else ip
         headers = {
             "Content-Type": "application/json",

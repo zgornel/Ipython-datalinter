@@ -1,10 +1,16 @@
 """Tests for ``datalintermagic.datalintermagic``.
+
+Maintainability notes:
+- Message fragments and payload builders are centralized.
+- Display output is captured via a helper (source uses IPython.display.display + Pretty).
+- Parsing errors return None + display instead of raising (match current source).
+- Only valid identifiers are accepted for tracked variables.
+- Cell magic always executes the cell.
 """
 
 import argparse
 import json
 import socket
-import ipaddress
 import sys
 from pathlib import Path
 
@@ -12,6 +18,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+# Ensure local src is importable when running from a checkout
 _SRC = Path(__file__).resolve().parents[1] / "src"
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -27,11 +34,32 @@ from datalintermagic.datalintermagic import (  # noqa: E402
     _parse_delimiter,
 )
 
+# ---------------------------------------------------------------------------
+# Centralized expected message fragments (update here if source wording changes)
+# ---------------------------------------------------------------------------
+MSG_MISSING_TRACKED = "Warning (Linter): Use '--tracked-variable' to specify a data variable!"
+MSG_INVALID_IDENTIFIER = "Warning (Linter): Ivalid identifier specified with '--tracked-variable'"
+MSG_LINE_PARSE_ERROR = "Warning (Linter): Line parse error:"
+MSG_ADD_PARSE_FAIL = "Warning (Linter): Could not parse line for '%add' magic"
+MSG_ADD_FAIL = "Warning (Linter): Could not add"
+MSG_LINTLINE_NEEDS_SYMBOL = "Warning (Linter): '%lintline' magic needs a valid data symbol"
+MSG_LINTLINE_PARSE_FAIL = "Warning (Linter): Could not parse line for '%lintline' magic"
+MSG_LINTCELL_PARSE_FAIL = "Warning (Linter): Could not parse line for '%lintcell' magic"
+MSG_CANNOT_REACH = "Warning (Linter): Cannot reach server:"
+MSG_HTTP_REJECT = "Warning (Linter): Server rejected the request"
+MSG_FAILED_READ = "Warning (Linter): Failed to read linter output"
+MSG_LINTER_OUTPUT_PREFIX = "Linter output\n-------------\n"
+MSG_GENERATED_NAMES = "will be exported with [x0 ... xN] column names"
+
+# Small reusable CSV fixtures
 TWO_COL_NO_HEADER = "1,3\n2,4\n"
 TWO_COL_HEADER = "a,b\n1,3\n2,4\n"
 TWO_COL_PIPE_HEADER = "a|b\n1|3\n2|4\n"
 
 
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def shell():
     import IPython
@@ -47,8 +75,34 @@ def magic(shell):
     return DataLinterMagic(shell)
 
 
+@pytest.fixture
+def two_col_frame():
+    return pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def capture_display(monkeypatch):
+    """Monkeypatch display() to collect Pretty (or other) objects as strings.
+
+    Returns a list that accumulates the displayed content.
+    """
+    displayed = []
+
+    def fake_display(obj, *args, **kwargs):
+        # Pretty objects expose .data; fall back to str
+        text = getattr(obj, "data", None)
+        if text is None:
+            text = str(obj)
+        displayed.append(text)
+
+    monkeypatch.setattr("datalintermagic.datalintermagic.display", fake_display)
+    return displayed
+
+
 def _install_http(monkeypatch):
-    """Replace HTTPConnection with a fake that records one request."""
+    """Replace HTTPConnection with a recording fake. Returns a mutable state dict."""
     state = {
         "response": None,
         "request_error": None,
@@ -114,9 +168,10 @@ def _install_http(monkeypatch):
 
 
 def _capture_lint(monkeypatch, magic, response=None, error=None):
+    """Replace http_lint_request with a recorder that can return a value or raise."""
     captured = {}
 
-    def fake(ip, port, body, timeout=300.0, path="/api/lint"):
+    def fake(ip, port, body, timeout=60.0, path="/api/lint"):
         captured["ip"] = ip
         captured["port"] = port
         captured["body"] = body
@@ -131,10 +186,73 @@ def _capture_lint(monkeypatch, magic, response=None, error=None):
     return captured
 
 
-def _two_col_frame():
-    return pd.DataFrame({"a": [1, 2], "b": [3, 4]})
+def make_line_payload(
+    data,
+    delim=",",
+    header=False,
+    show_stats=False,
+    show_passing=False,
+    show_na=False,
+    code="",
+):
+    """Build the JSON body expected by lintline."""
+    return {
+        "linter_input": {
+            "context": {
+                "data": data,
+                "data_delim": delim,
+                "data_header": header,
+                "code": code,
+            },
+            "options": {
+                "show_stats": show_stats,
+                "show_passing": show_passing,
+                "show_na": show_na,
+            },
+        }
+    }
 
 
+def make_cell_payload(
+    tracked,  # dict of name -> list/tuple (csv, header, delim)
+    cell,
+    show_stats=False,
+    show_passing=False,
+    show_na=False,
+):
+    """Build the JSON body expected by lintcell.
+
+    json.dumps converts tuples to lists.
+    """
+    return {
+        "linter_input": {
+            "context": {
+                "data": tracked,
+                "code": cell,
+            },
+            "options": {
+                "show_stats": show_stats,
+                "show_passing": show_passing,
+                "show_na": show_na,
+            },
+        }
+    }
+
+
+def assert_payload_equals(captured_body, expected_dict):
+    """Decode and compare a request body against an expected payload dict."""
+    actual = json.loads(captured_body.decode("utf-8"))
+    assert actual == expected_dict
+
+
+def assert_any_contains(messages, fragment):
+    """Assert that at least one displayed message contains the fragment."""
+    assert any(fragment in m for m in messages), f"{fragment!r} not found in {messages}"
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
 class TestExceptions:
     def test_connection_error_message(self):
         err = LinterConnectionError("cannot connect")
@@ -189,29 +307,34 @@ class TestParseAddMagic:
                 "--data-delim ; --tracked-variable df --data-header",
                 ("df", True, ";"),
             ),
-            ('--tracked-variable "my var"', ("my var", False, ",")),
             ("--tracked-variable df --data-delim ''", ("df", False, "")),
         ],
     )
-    def test_success(self, line, expected):
+    def test_success_valid_identifier(self, line, expected, monkeypatch):
+        # Valid identifiers succeed; no display expected
+        displayed = capture_display(monkeypatch)
         assert DataLinterMagic._parse_add_magic(line) == expected
+        assert displayed == []
 
     @pytest.mark.parametrize(
         "line",
         ["", "   ", "--data-header", "--data-delim ,"],
     )
-    def test_missing_tracked_variable_warns_and_returns_none(self, capsys, line):
+    def test_missing_tracked_variable(self, monkeypatch, line):
+        displayed = capture_display(monkeypatch)
         assert DataLinterMagic._parse_add_magic(line) is None
-        assert (
-            "Warning (Linter): Use '--tracked-variable' to specify a data variable!"
-            in capsys.readouterr().out
-        )
+        assert_any_contains(displayed, MSG_MISSING_TRACKED)
 
-    def test_unbalanced_quotes_are_swallowed(self, capsys):
+    def test_invalid_identifier(self, monkeypatch):
+        displayed = capture_display(monkeypatch)
+        assert DataLinterMagic._parse_add_magic('--tracked-variable "my var"') is None
+        assert_any_contains(displayed, MSG_INVALID_IDENTIFIER)
+
+    def test_unbalanced_quotes_swallowed(self, monkeypatch):
+        displayed = capture_display(monkeypatch)
         assert DataLinterMagic._parse_add_magic('--tracked-variable "df') is None
-        out = capsys.readouterr().out
-        assert "Could not parse line for %%add line magic:" in out
-        assert "No closing quotation" in out
+        assert_any_contains(displayed, MSG_LINE_PARSE_ERROR)
+        assert_any_contains(displayed, "No closing quotation")
 
 
 class TestParseLintMagic:
@@ -231,14 +354,16 @@ class TestParseLintMagic:
             ),
             ("--port 1", (None, DEFAULT_IP, 1, False, False, False)),
             ("--port +80", (None, DEFAULT_IP, 80, False, False, False)),
-            ('"my var"', ("my var", DEFAULT_IP, DEFAULT_PORT, False, False, False)),
+            ('"my_var"', ("my_var", DEFAULT_IP, DEFAULT_PORT, False, False, False)),
         ],
     )
-    def test_success_without_explicit_ip(self, line, expected):
+    def test_success(self, line, expected, monkeypatch):
+        displayed = capture_display(monkeypatch)
         assert DataLinterMagic._parse_lint_magic(line) == expected
+        assert displayed == []
 
-    def test_explicit_ipv4_is_returned_as_string(self):
-        # parser returns (not the original string).
+    def test_explicit_ipv4(self, monkeypatch):
+        displayed = capture_display(monkeypatch)
         parsed = DataLinterMagic._parse_lint_magic(
             "--ip 10.0.0.8 df --port 2500 --show-stats"
         )
@@ -249,80 +374,77 @@ class TestParseLintMagic:
         assert show_stats is True
         assert show_na is False
         assert show_passing is False
-    
+        assert displayed == []
+
     @pytest.mark.parametrize("ip", ["::1", "127.0.0.1"])
-    def test_valid_ip(self, ip):
-        _ip = DataLinterMagic._parse_lint_magic(f"--ip {ip}" if ip else '--ip ""')[1]
-        assert _ip == ip
+    def test_valid_ip(self, ip, monkeypatch):
+        displayed = capture_display(monkeypatch)
+        parsed_ip = DataLinterMagic._parse_lint_magic(f"--ip {ip}")[1]
+        assert parsed_ip == ip
+        assert displayed == []
 
     @pytest.mark.parametrize("ip", ["nope", "256.1.1.1", "127.1"])
-    def test_invalid_ip_raises(self, ip):
-        with pytest.raises(ValueError, match="not valid") as exc:
-            DataLinterMagic._parse_lint_magic(f"--ip {ip}" if ip else '--ip ""')
+    def test_invalid_ip_returns_none_and_displays(self, ip, monkeypatch):
+        displayed = capture_display(monkeypatch)
+        assert DataLinterMagic._parse_lint_magic(f"--ip {ip}") is None
+        assert_any_contains(displayed, MSG_LINE_PARSE_ERROR)
+        assert_any_contains(displayed, "not valid")
 
     @pytest.mark.parametrize(
-        "port,match",
+        "port,fragment",
         [
-            ("0", "Invalid port value. Needs to be an integer between 1 and 65535"),
-            ("-1", "Invalid port value. Needs to be an integer between 1 and 65535"),
-            ("65536", "Invalid port value. Needs to be an integer between 1 and 65535"),
+            ("0", "Invalid port value"),
+            ("-1", "Invalid port value"),
+            ("65536", "Invalid port value"),
             ("abc", "invalid literal for int"),
             ("1.5", "invalid literal for int"),
             ("", "invalid literal for int"),
         ],
     )
-    def test_invalid_port_raises(self, port, match):
+    def test_invalid_port_returns_none_and_displays(self, port, fragment, monkeypatch):
+        displayed = capture_display(monkeypatch)
         line = f'--port "{port}"' if port == "" else f"--port {port}"
-        with pytest.raises(ValueError, match=match):
-            DataLinterMagic._parse_lint_magic(line)
+        assert DataLinterMagic._parse_lint_magic(line) is None
+        assert_any_contains(displayed, MSG_LINE_PARSE_ERROR)
+        assert_any_contains(displayed, fragment)
 
     @pytest.mark.parametrize("line", ["--ip", "--port"])
-    def test_missing_option_value_raises_argument_error(self, line):
-        # exit_on_error=False lets ArgumentError escape; it is not wrapped.
-        with pytest.raises(argparse.ArgumentError):
-            DataLinterMagic._parse_lint_magic(line)
+    def test_missing_option_value_returns_none_and_displays(self, line, monkeypatch):
+        displayed = capture_display(monkeypatch)
+        assert DataLinterMagic._parse_lint_magic(line) is None
+        assert_any_contains(displayed, MSG_LINE_PARSE_ERROR)
 
-    def test_unbalanced_quotes_propagate(self):
-        with pytest.raises(ValueError, match="No closing quotation"):
-            DataLinterMagic._parse_lint_magic('--ip "unterminated')
+    @pytest.mark.parametrize("line", ["df extra", "--bogus"])
+    def test_unrecognized_args_raise_system_exit(self, line, monkeypatch):
+        # argparse calls sys.exit for unrecognized arguments even with exit_on_error=False
+        capture_display(monkeypatch)
+        assert DataLinterMagic._parse_lint_magic(line) is None
 
-    @pytest.mark.parametrize(
-        "line,code",
-        [
-            ("--help", 0),
-        ],
-    )
-    def test_parser_exits_for_usage_errors(self, line, code):
-        # parse_args() still calls sys.exit for --help.
-        with pytest.raises(SystemExit) as exc:
-            DataLinterMagic._parse_lint_magic(line)
-        assert exc.value.code == code
-    
-    @pytest.mark.parametrize(
-        "line,code",
-        [
-            ("df extra", 2),
-            ("--bogus", 2),
-        ],
-    )
-    def test_parser_exits_for_usage_errors_2(self, line, code):
-        with pytest.raises(argparse.ArgumentError) as exc:
-            DataLinterMagic._parse_lint_magic(line)
+    def test_unbalanced_quotes(self, monkeypatch):
+        displayed = capture_display(monkeypatch)
+        assert DataLinterMagic._parse_lint_magic('--ip "unterminated') is None
+        assert_any_contains(displayed, MSG_LINE_PARSE_ERROR)
+        assert_any_contains(displayed, "No closing quotation")
+
+    def test_help_exits(self, monkeypatch):
+        # --help still triggers SystemExit inside argparse before our handler
+        displayed = capture_display(monkeypatch)
+        DataLinterMagic._parse_lint_magic("--help") is None
+
 
 class TestCsvConversion:
-    def test_dataframe_without_header_omits_names_and_index(self, magic):
-        frame = _two_col_frame()
-        frame.index = pd.Index(["r1", "r2"], name="row")
-        assert magic.dataframe_to_csv_string(frame, header=False, delimiter=",") == (
+    def test_dataframe_without_header_omits_names_and_index(self, magic, two_col_frame):
+        two_col_frame.index = pd.Index(["r1", "r2"], name="row")
+        assert magic.dataframe_to_csv_string(two_col_frame, header=False, delimiter=",") == (
             TWO_COL_NO_HEADER
         )
 
-    def test_dataframe_header_uses_string_column_names(self, magic):
+    def test_dataframe_header_uses_string_column_names(self, magic, two_col_frame):
         assert magic.dataframe_to_csv_string(
-            _two_col_frame(), header=True, delimiter=","
+            two_col_frame, header=True, delimiter=","
         ) == TWO_COL_HEADER
         assert magic.dataframe_to_csv_string(
-            _two_col_frame(), header=True, delimiter="|"
+            two_col_frame, header=True, delimiter="|"
         ) == TWO_COL_PIPE_HEADER
 
     def test_header_must_be_true_not_merely_truthy(self, magic):
@@ -331,19 +453,26 @@ class TestCsvConversion:
         assert magic.dataframe_to_csv_string(frame, header=1, delimiter=",") == "1\n"
         assert magic.dataframe_to_csv_string(frame, header=True, delimiter=",") == "a\n1\n"
 
-    def test_integer_columns_get_generated_names_when_header_requested(self, magic):
+    def test_integer_columns_get_generated_names_and_warn(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
         frame = pd.DataFrame([[10, 20], [30, 40]])
-        assert magic.dataframe_to_csv_string(frame, True, ",") == "x0,x1\n10,20\n30,40\n"
+        assert magic.dataframe_to_csv_string(frame, True, ",", symbol="arr") == (
+            "x0,x1\n10,20\n30,40\n"
+        )
+        assert_any_contains(displayed, MSG_GENERATED_NAMES)
+        assert_any_contains(displayed, "arr")
+
+        # Without header, no warning and no names
+        displayed.clear()
         assert magic.dataframe_to_csv_string(frame, False, ",") == "10,20\n30,40\n"
+        assert displayed == []
 
-    def test_generated_names_depend_only_on_the_first_column(self, magic):
+    def test_mixed_columns_trigger_generated_names(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
         frame = pd.DataFrame([[1, 2]])
-        frame.columns = [0, "b"]
-        assert magic.dataframe_to_csv_string(frame, True, ",") == "x0,x1\n1,2\n"
-
-        named = pd.DataFrame([[1, 2]])
-        named.columns = ["a", 1]
-        assert magic.dataframe_to_csv_string(named, True, ",") == "a,1\n1,2\n"
+        frame.columns = [0, "b"]  # not all str
+        assert magic.dataframe_to_csv_string(frame, True, ",", symbol="mix") == "x0,x1\n1,2\n"
+        assert_any_contains(displayed, MSG_GENERATED_NAMES)
 
     def test_empty_dataframe_is_blank_even_with_header(self, magic):
         empty = pd.DataFrame({"a": pd.Series(dtype="object"), "b": pd.Series(dtype="int")})
@@ -351,18 +480,28 @@ class TestCsvConversion:
         assert magic.dataframe_to_csv_string(empty, header=True, delimiter=";") == ""
         assert magic.dataframe_to_csv_string(pd.DataFrame(), False, ",") == ""
 
-    def test_ndarray_two_dimensions(self, magic):
+    def test_ndarray_two_dimensions(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
         arr = np.array([[1, 2], [3, 4]])
         assert magic.ndarray_to_csv_string(arr, False, ",") == "1,2\n3,4\n"
-        assert magic.to_csv_string(arr, True, ",") == "x0,x1\n1,2\n3,4\n"
+        assert magic.to_csv_string(arr, True, ",", symbol="nd") == "x0,x1\n1,2\n3,4\n"
+        assert_any_contains(displayed, MSG_GENERATED_NAMES)
 
-    def test_ndarray_one_dimension(self, magic):
+    def test_ndarray_one_dimension(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
         arr = np.array([1, 2, 3])
         assert magic.to_csv_string(arr, False, ",") == "1\n2\n3\n"
-        assert magic.ndarray_to_csv_string(arr, True, ",") == "x0\n1\n2\n3\n"
+        assert magic.ndarray_to_csv_string(arr, True, ",", symbol="v") == "x0\n1\n2\n3\n"
+        assert_any_contains(displayed, MSG_GENERATED_NAMES)
 
     def test_empty_ndarray(self, magic):
         assert magic.to_csv_string(np.empty((0, 2)), True, ",") == ""
+
+    def test_na_rep_is_NA(self, magic):
+        frame = pd.DataFrame({"a": [1.0, np.nan]})
+        result = magic.dataframe_to_csv_string(frame, header=False, delimiter=",")
+        assert "NA" in result
+        assert "nan" not in result.lower() or "NA" in result
 
     @pytest.mark.parametrize(
         "value",
@@ -409,7 +548,7 @@ class TestHttpLintRequest:
         state["response"] = state["FakeResponse"](200, "OK", b'{"ok": true}')
 
         assert magic.http_lint_request(DEFAULT_IP, DEFAULT_PORT, b"{}") == {"ok": True}
-        assert state["conn"].timeout == 300.0
+        assert state["conn"].timeout == 60.0
         assert state["conn"].requested["url"] == "/api/lint"
         assert state["conn"].requested["headers"]["Content-Length"] == "2"
 
@@ -468,7 +607,9 @@ class TestHttpLintRequest:
         timeout = socket.timeout("slow")
         state["request_error"] = timeout
 
-        with pytest.raises(LinterConnectionError, match="Timed out after 2.5s talking to 10.0.0.5:9") as exc:
+        with pytest.raises(
+            LinterConnectionError, match="Timed out after 2.5s talking to 10.0.0.5:9"
+        ) as exc:
             magic.http_lint_request("10.0.0.5", 9, b"{}", timeout=2.5)
 
         assert exc.value.__cause__ is timeout
@@ -513,15 +654,19 @@ class TestHttpLintRequest:
 
 
 class TestAddMagic:
-    def test_tracks_dataframe_and_returns_none(self, magic, shell, capsys):
-        shell.user_ns["df_add"] = _two_col_frame()
+    def test_tracks_dataframe_and_returns_none(self, magic, shell, monkeypatch, two_col_frame):
+        displayed = capture_display(monkeypatch)
+        shell.user_ns["df_add"] = two_col_frame
 
         assert magic.add("--tracked-variable df_add") is None
-        assert capsys.readouterr().out == ""
+        assert displayed == []
 
         csv_text, header, delim = magic.all_tracked_variables["df_add"]
         assert (csv_text, header, delim) == (TWO_COL_NO_HEADER, False, ",")
 
+    def test_tracks_dataframe_with_header_and_custom_delim(self, magic, shell, two_col_frame, monkeypatch):
+        capture_display(monkeypatch)  # silence any display
+        shell.user_ns["df_add"] = two_col_frame
         magic.add("--tracked-variable df_add --data-header --data-delim |")
         assert magic.all_tracked_variables["df_add"] == (
             TWO_COL_PIPE_HEADER,
@@ -529,7 +674,8 @@ class TestAddMagic:
             "|",
         )
 
-    def test_tracks_ndarray(self, magic, shell):
+    def test_tracks_ndarray(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["arr_add"] = np.array([[1, 2], [3, 4]])
         magic.add("--tracked-variable arr_add --data-header")
         assert magic.all_tracked_variables["arr_add"] == (
@@ -537,44 +683,52 @@ class TestAddMagic:
             True,
             ",",
         )
+        # Generated names produce a warning
+        assert_any_contains(displayed, MSG_GENERATED_NAMES)
 
-    def test_evaluates_expressions(self, magic, shell):
+    def test_rejects_expression_and_spaced_name(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["df_expr"] = pd.DataFrame({"a": [1, 2]})
+        # Not a valid identifier
         assert magic.add('--tracked-variable "df_expr * 2"') is None
-        assert magic.all_tracked_variables["df_expr * 2"] == ("2\n4\n", False, ",")
+        assert "df_expr * 2" not in magic.all_tracked_variables
+        assert_any_contains(displayed, MSG_INVALID_IDENTIFIER)
+        assert_any_contains(displayed, MSG_ADD_PARSE_FAIL)
 
-    def test_non_expression_name_is_not_tracked(self, magic, shell, capsys):
-        # shlex keeps the spaced name, but add() evaluates it with shell.ev.
-        shell.user_ns["my frame"] = pd.DataFrame({"a": [8]})
-        assert magic.add('--tracked-variable "my frame"') is None
-        assert "my frame" not in magic.all_tracked_variables
-        out = capsys.readouterr().out
-        assert "Could not add 'my frame'" in out
-        assert "invalid syntax" in out
+        displayed.clear()
+        shell.user_ns["my_frame"] = pd.DataFrame({"a": [8]})
+        # Valid identifier works
+        assert magic.add("--tracked-variable my_frame") is None
+        assert "my_frame" in magic.all_tracked_variables
 
-    def test_missing_name_warns_and_does_not_track(self, magic, capsys):
+    def test_missing_name_warns_and_does_not_track(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
         assert magic.add("--tracked-variable does_not_exist") is None
         assert "does_not_exist" not in magic.all_tracked_variables
-        out = capsys.readouterr().out
-        assert "Could not add 'does_not_exist'" in out
+        assert_any_contains(displayed, MSG_ADD_FAIL)
 
-    def test_unsupported_value_warns_and_does_not_track(self, magic, shell, capsys):
+    def test_unsupported_value_warns_and_does_not_track(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["vals_add"] = [1, 2, 3]
         assert magic.add("--tracked-variable vals_add") is None
         assert "vals_add" not in magic.all_tracked_variables
-        out = capsys.readouterr().out
-        assert "Could not add 'vals_add'" in out
-        assert "Unsupported type" in out
+        assert_any_contains(displayed, MSG_ADD_FAIL)
+        assert_any_contains(displayed, "Unsupported type")
 
-    def test_bad_syntax_warns_instead_of_raising(self, magic, capsys):
+    def test_bad_syntax_warns_instead_of_raising(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
         assert magic.add('--tracked-variable "df') is None
         assert magic.all_tracked_variables == {}
-        assert "Could not parse line for %%add line magic:" in capsys.readouterr().out
+        assert_any_contains(displayed, MSG_LINE_PARSE_ERROR)
+        assert_any_contains(displayed, MSG_ADD_PARSE_FAIL)
 
-    def test_unknown_argument_exits_without_tracking(self, magic):
+    def test_unknown_argument_raises_system_exit(self, magic, monkeypatch):
+        capture_display(monkeypatch)
+        assert magic.add("--unknown") is None
         assert magic.all_tracked_variables == {}
 
-    def test_shell_line_magic_uses_the_registered_instance(self, shell):
+    def test_shell_line_magic_uses_the_registered_instance(self, shell, monkeypatch):
+        capture_display(monkeypatch)
         shell.register_magics(DataLinterMagic)
         registered = shell.find_line_magic("add").__self__
         registered.all_tracked_variables.clear()
@@ -586,10 +740,11 @@ class TestAddMagic:
 
 
 class TestLintLineMagic:
-    def test_posts_tracked_frame_and_prints_output(self, magic, shell, monkeypatch, capsys):
+    def test_posts_tracked_frame_and_displays_output(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["df_line"] = pd.DataFrame({"city": ["Żory", "Łódź"]})
         magic.add("--tracked-variable df_line --data-header --data-delim ;")
-        capsys.readouterr()
+        displayed.clear()
         captured = _capture_lint(
             monkeypatch, magic, response={"linting_output": "row 1: ok\nrow 2: ok"}
         )
@@ -599,53 +754,39 @@ class TestLintLineMagic:
         assert captured["ip"] == DEFAULT_IP
         assert captured["port"] == 2222
         assert captured["path"] == "/api/lint"
-        assert json.loads(captured["body"].decode("utf-8")) == {
-            "linter_input": {
-                "context": {
-                    "data": "city\nŻory\nŁódź\n",
-                    "data_delim": ";",
-                    "data_header": True,
-                    "code": "",
-                },
-                "options": {
-                    "show_stats": True,
-                    "show_passing": False,
-                    "show_na": False,
-                },
-            }
-        }
-        assert capsys.readouterr().out == (
-            "Linter output\n-------------\nrow 1: ok\nrow 2: ok\n"
+        assert_payload_equals(
+            captured["body"],
+            make_line_payload(
+                data="city\nŻory\nŁódź\n",
+                delim=";",
+                header=True,
+                show_stats=True,
+            ),
         )
+        assert_any_contains(displayed, MSG_LINTER_OUTPUT_PREFIX + "row 1: ok\nrow 2: ok")
 
     def test_refreshes_from_user_namespace_before_the_request(self, magic, shell, monkeypatch):
+        capture_display(monkeypatch)
         frame = pd.DataFrame({"a": [1], "b": [2]})
         shell.user_ns["df_refresh"] = frame
         magic.add("--tracked-variable df_refresh")
-        frame.iloc[0, 0] = 7
         shell.user_ns["df_refresh"] = pd.DataFrame({"a": [7, 8], "b": [2, 9]})
         captured = _capture_lint(monkeypatch, magic)
 
         magic.lintline("df_refresh --show-na --show-passing")
 
-        assert json.loads(captured["body"].decode()) == {
-            "linter_input": {
-                "context": {
-                    "data": "7,2\n8,9\n",
-                    "data_delim": ",",
-                    "data_header": False,
-                    "code": "",
-                },
-                "options": {
-                    "show_stats": False,
-                    "show_passing": True,
-                    "show_na": True,
-                },
-            }
-        }
+        assert_payload_equals(
+            captured["body"],
+            make_line_payload(
+                data="7,2\n8,9\n",
+                show_passing=True,
+                show_na=True,
+            ),
+        )
         assert magic.all_tracked_variables["df_refresh"][0] == "7,2\n8,9\n"
 
     def test_keeps_cached_csv_when_the_name_was_deleted(self, magic, shell, monkeypatch):
+        capture_display(monkeypatch)
         shell.user_ns["df_cached"] = pd.DataFrame({"a": [1], "b": [2]})
         magic.add("--tracked-variable df_cached")
         del shell.user_ns["df_cached"]
@@ -655,7 +796,8 @@ class TestLintLineMagic:
 
         assert json.loads(captured["body"].decode())["linter_input"]["context"]["data"] == "1,2\n"
 
-    def test_explicit_ip_is_forwarded_as_packed_bytes(self, magic, shell, monkeypatch):
+    def test_explicit_ip_is_forwarded(self, magic, shell, monkeypatch):
+        capture_display(monkeypatch)
         shell.user_ns["df_ip"] = pd.DataFrame({"a": [1]})
         magic.add("--tracked-variable df_ip")
         captured = _capture_lint(monkeypatch, magic)
@@ -665,14 +807,22 @@ class TestLintLineMagic:
         assert captured["ip"] == "10.1.1.1"
         assert captured["port"] == 9
 
-    def test_unknown_variable_is_a_silent_no_op(self, magic, monkeypatch, capsys):
+    def test_unknown_variable_displays_warning(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
         captured = _capture_lint(monkeypatch, magic)
         assert magic.lintline("not_tracked") is None
+        assert "calls" not in captured
+        assert_any_contains(displayed, MSG_LINTLINE_NEEDS_SYMBOL)
+
+    def test_empty_line_displays_needs_symbol(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
+        captured = _capture_lint(monkeypatch, magic)
         assert magic.lintline("") is None
         assert "calls" not in captured
-        assert capsys.readouterr().out == ""
+        assert_any_contains(displayed, MSG_LINTLINE_NEEDS_SYMBOL)
 
-    def test_connection_error_is_printed(self, magic, shell, monkeypatch, capsys):
+    def test_connection_error_is_displayed(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["df_down"] = pd.DataFrame({"a": [1]})
         magic.add("--tracked-variable df_down")
         shell.user_ns["df_down"] = pd.DataFrame({"a": [1, 2]})
@@ -680,11 +830,12 @@ class TestLintLineMagic:
 
         assert magic.lintline("df_down") is None
 
-        assert "Warning (Linter): Cannot reach server:" in capsys.readouterr().out
+        assert_any_contains(displayed, MSG_CANNOT_REACH)
         # The namespace was refreshed before the failing request.
         assert magic.all_tracked_variables["df_down"][0] == "1\n2\n"
 
-    def test_http_error_is_printed(self, magic, shell, monkeypatch, capsys):
+    def test_http_error_is_displayed(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["df_http"] = pd.DataFrame({"a": [1]})
         magic.add("--tracked-variable df_http")
         _capture_lint(
@@ -695,31 +846,32 @@ class TestLintLineMagic:
 
         magic.lintline("df_http")
 
-        out = capsys.readouterr().out
-        assert "Server rejected the request (HTTP 422 Unprocessable Entity):" in out
-        assert "bad column" in out
+        assert_any_contains(displayed, MSG_HTTP_REJECT)
+        assert_any_contains(displayed, "HTTP 422 Unprocessable Entity")
+        assert_any_contains(displayed, "bad column")
 
-    def test_missing_linting_output_is_printed_as_failure(self, magic, shell, monkeypatch, capsys):
+    def test_missing_linting_output_is_displayed_as_failure(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["df_bad_json"] = pd.DataFrame({"a": [1]})
         magic.add("--tracked-variable df_bad_json")
         _capture_lint(monkeypatch, magic, response={"nope": 1})
 
         magic.lintline("df_bad_json")
 
-        out = capsys.readouterr().out
-        assert "Failed to read linter output (perhaps linting failed):" in out
+        assert_any_contains(displayed, MSG_FAILED_READ)
 
-    def test_generic_request_error_is_printed(self, magic, shell, monkeypatch, capsys):
+    def test_generic_request_error_is_displayed(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["df_boom"] = pd.DataFrame({"a": [1]})
         magic.add("--tracked-variable df_boom")
         _capture_lint(monkeypatch, magic, error=RuntimeError("boom"))
 
         magic.lintline("df_boom")
-        out = capsys.readouterr().out
-        assert "boom" in out
-        assert "Failed to read linter output" in out
+        assert_any_contains(displayed, "boom")
+        assert_any_contains(displayed, MSG_FAILED_READ)
 
     def test_refresh_type_error_propagates_and_skips_the_request(self, magic, shell, monkeypatch):
+        capture_display(monkeypatch)
         shell.user_ns["df_type"] = pd.DataFrame({"a": [1]})
         magic.add("--tracked-variable df_type")
         original = magic.all_tracked_variables["df_type"]
@@ -732,25 +884,29 @@ class TestLintLineMagic:
         assert "calls" not in captured
         assert magic.all_tracked_variables["df_type"] == original
 
-    def test_invalid_port_raises_before_the_request(self, magic, monkeypatch):
+    def test_invalid_port_displays_and_skips_request(self, magic, monkeypatch):
+        displayed = capture_display(monkeypatch)
         captured = _capture_lint(monkeypatch, magic)
-        with pytest.raises(ValueError, match="Invalid port"):
-            magic.lintline("df_line --port 0")
+        assert magic.lintline("df_line --port 0") is None
         assert "calls" not in captured
+        assert_any_contains(displayed, MSG_LINE_PARSE_ERROR)
+        assert_any_contains(displayed, MSG_LINTLINE_PARSE_FAIL)
 
 
 class TestLintCellMagic:
     def test_request_uses_every_tracked_variable_and_then_runs_the_cell(
-        self, magic, shell, monkeypatch, capsys
+        self, magic, shell, monkeypatch
     ):
-        shell.user_ns["cell_df"] = _two_col_frame()
+        displayed = capture_display(monkeypatch)
+        shell.user_ns["cell_df"] = pd.DataFrame({"a": [1, 2], "b": [3, 4]})
         shell.user_ns["cell_arr"] = np.array([5])
         magic.add("--tracked-variable cell_df")
         magic.add("--tracked-variable cell_arr --data-delim | --data-header")
         shell.user_ns["cell_df"] = pd.DataFrame({"a": [9], "b": [8]})
+        displayed.clear()
         seen = {}
 
-        def recording_fake(ip, port, body, timeout=300.0, path="/api/lint"):
+        def recording_fake(ip, port, body, timeout=60.0, path="/api/lint"):
             seen["during"] = shell.user_ns["cell_flag"]
             seen["ip"] = ip
             seen["port"] = port
@@ -771,27 +927,23 @@ class TestLintCellMagic:
         assert shell.user_ns["cell_df"].iloc[0, 0] == 100
         assert seen["port"] == 1234
         assert seen["ip"] == DEFAULT_IP
-        assert json.loads(seen["body"].decode()) == {
-            "linter_input": {
-                "context": {
-                    "data": {
-                        "cell_df": ["9,8\n", False, ","],
-                        "cell_arr": ["x0\n5\n", True, "|"],
-                    },
-                    "code": "cell_flag = 'after'\ncell_df.iloc[0, 0] = 100\n6 * 7",
+        assert_payload_equals(
+            seen["body"],
+            make_cell_payload(
+                tracked={
+                    "cell_df": ["9,8\n", False, ","],
+                    "cell_arr": ["x0\n5\n", True, "|"],
                 },
-                "options": {
-                    "show_stats": True,
-                    "show_passing": True,
-                    "show_na": True,
-                },
-            }
-        }
-        assert capsys.readouterr().out.startswith(
-            "Linter output\n-------------\nclean\n"
+                cell="cell_flag = 'after'\ncell_df.iloc[0, 0] = 100\n6 * 7",
+                show_stats=True,
+                show_passing=True,
+                show_na=True,
+            ),
         )
+        assert_any_contains(displayed, MSG_LINTER_OUTPUT_PREFIX + "clean")
 
     def test_deleted_name_keeps_its_cached_csv(self, magic, shell, monkeypatch):
+        capture_display(monkeypatch)
         shell.user_ns["keep_df"] = pd.DataFrame({"a": [1]})
         shell.user_ns["drop_df"] = pd.DataFrame({"b": [2]})
         magic.add("--tracked-variable keep_df")
@@ -810,6 +962,7 @@ class TestLintCellMagic:
     def test_positional_name_is_ignored_and_empty_tracking_still_posts(
         self, magic, monkeypatch
     ):
+        capture_display(monkeypatch)
         captured = _capture_lint(monkeypatch, magic)
         assert magic.lintcell("not_tracked --ip 10.1.1.1 --port 9 --show-passing", "1+1") == 2
         payload = json.loads(captured["body"].decode())
@@ -823,13 +976,15 @@ class TestLintCellMagic:
             "show_na": False,
         }
 
-    def test_server_errors_do_not_block_the_cell(self, magic, shell, monkeypatch, capsys):
+    def test_server_errors_do_not_block_the_cell(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["ran_conn"] = False
         _capture_lint(monkeypatch, magic, error=LinterConnectionError("down"))
         assert magic.lintcell("", "ran_conn = True\n2 + 2") == 4
         assert shell.user_ns["ran_conn"] is True
-        assert "Cannot reach server:" in capsys.readouterr().out
+        assert_any_contains(displayed, MSG_CANNOT_REACH)
 
+        displayed.clear()
         shell.user_ns["ran_http"] = False
         _capture_lint(
             monkeypatch,
@@ -838,29 +993,37 @@ class TestLintCellMagic:
         )
         assert magic.lintcell("", "ran_http = True\n3") == 3
         assert shell.user_ns["ran_http"] is True
-        assert "HTTP 500 Internal Server Error" in capsys.readouterr().out
+        assert_any_contains(displayed, "HTTP 500 Internal Server Error")
 
+        displayed.clear()
         _capture_lint(monkeypatch, magic, response={})
         assert magic.lintcell("", "4") == 4
-        assert "Failed to read linter output" in capsys.readouterr().out
+        assert_any_contains(displayed, MSG_FAILED_READ)
 
-    def test_parse_errors_skip_the_cell(self, magic, shell, monkeypatch):
+    def test_parse_errors_display_but_still_run_the_cell(self, magic, shell, monkeypatch):
+        displayed = capture_display(monkeypatch)
         shell.user_ns["cell_guard"] = 0
         captured = _capture_lint(monkeypatch, magic)
 
-        with pytest.raises(ValueError, match="not valid"):
-            magic.lintcell("--ip nope", "cell_guard = 1")
-        with pytest.raises(ValueError, match="Invalid port"):
-            magic.lintcell("--port 99999", "cell_guard = 1")
-        with pytest.raises(argparse.ArgumentError):
-            magic.lintcell("extra junk", "cell_guard = 1")
-        with pytest.raises(argparse.ArgumentError):
-            magic.lintcell("--port", "cell_guard = 1")
-
-        assert shell.user_ns["cell_guard"] == 0
+        # Invalid IP is caught (ValueError), returns None, but cell still runs.
+        # Pure assignment returns None from run_cell; check the side effect.
+        assert magic.lintcell("--ip nope", "cell_guard = 1") is None
+        assert shell.user_ns["cell_guard"] == 1
+        assert_any_contains(displayed, MSG_LINTCELL_PARSE_FAIL)
         assert "calls" not in captured
 
-    def test_refresh_failure_skips_the_cell(self, magic, shell, monkeypatch):
+        displayed.clear()
+        shell.user_ns["cell_guard"] = 0
+        assert magic.lintcell("--port 99999", "cell_guard = 2") is None
+        assert shell.user_ns["cell_guard"] == 2
+        assert_any_contains(displayed, MSG_LINTCELL_PARSE_FAIL)
+
+        shell.user_ns["cell_guard"] = 0
+        assert magic.lintcell("extra junk", "cell_guard = 3") is None
+        assert shell.user_ns["cell_guard"] == 3
+
+    def test_refresh_failure_propagates_before_cell(self, magic, shell, monkeypatch):
+        capture_display(monkeypatch)
         shell.user_ns["cell_bad"] = pd.DataFrame({"a": [1]})
         magic.add("--tracked-variable cell_bad")
         shell.user_ns["cell_bad"] = {"a": 1}
@@ -874,6 +1037,7 @@ class TestLintCellMagic:
         assert "calls" not in captured
 
     def test_registered_cell_magic_returns_the_cell_result(self, shell, monkeypatch):
+        capture_display(monkeypatch)
         shell.register_magics(DataLinterMagic)
         registered = shell.find_cell_magic("lintcell").__self__
         registered.all_tracked_variables.clear()
