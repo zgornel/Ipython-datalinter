@@ -1,24 +1,31 @@
 # IPython plugin for DataLinter
 
-> Warning: This work is still very experimental.
+[![License](https://img.shields.io/pypi/l/datalintermagic)](https://pypi.org/project/datalintermagic/)
+[![Tests](https://github.com/zgornel/Ipython-datalinter/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/zgornel/Ipython-datalinter/actions/workflows/tests.yml?query=branch%3Amain)
+[![PyPI version](https://img.shields.io/pypi/v/datalintermagic)](https://pypi.org/project/datalintermagic/)
+[![Python versions](https://img.shields.io/pypi/pyversions/datalintermagic)](https://pypi.org/project/datalintermagic/)
+![til](./gifs/jupyter.gif)
 
 This is a Ipython magic that allows one to run [DataLinter](https://github.com/zgornel/DataLinter) in Jupyter notebooks.
 
-[![License](http://img.shields.io/badge/license-GPL-brightgreen.svg?style=flat)](LICENSE)
-
-![til](./gifs/jupyter.gif)
-
 ## Installation
 
-Make sure you have up-to-date stable versions of [IPython](https://ipython.org/) and [Jupyter](https://jupyter.org/).
+Make sure you have up-to-date stable versions of [IPython](https://ipython.org/) and [Jupyter](https://jupyter.org/). In order for the linter to work, both the Jupyter plugin and DataLinter (server in a Docker image) need to be installed in the system.
+
+### Jupyter plugin package
+
+The Jupyter plugin can be installed with `pip`:
+```
+pip install datalintermagic
+```
 
 ### DataLinter
 
-Install [DataLinter](https://github.com/zgornel/DataLinter) by pulling the Docker image:
+[DataLinter](https://github.com/zgornel/DataLinter) installation is done with:
 ```
 docker pull ghcr.io/zgornel/datalinter-compiled:latest
 ```
-and start it with:
+The command to start the linting server is:
 ```
 docker run -it --rm -p10000:10000 \
     ghcr.io/zgornel/datalinter-compiled:latest \
@@ -35,16 +42,16 @@ Warning: KB file not correctly specified, defaults will be used.
 [ Info: Listening on: 0.0.0.0:10000, thread id: 1
 ```
 
-### Ipython-datalinter magic
-Clone the repository:
-```
-git clone https://github.com/zgornel/Ipython-datalinter
-```
+## License
 
-To run the demo, enter the `Ipython-datalinter` folder, run
-```
-jupyter notebook
-```
-and open `ipython/demo.ipynb`.
+This code has an GNU GPLv3 license.
 
-> Note: In order for the `datalintermagics` magic to be available, the `datalintermagics` folder/module needs to be available to the jupyter notebook. The easy way to do this is to have the `datalintermagics` directory and notebooks in the same location.
+## Contributing
+
+To report a bug or request a feature, please [file an issue](https://github.com/zgornel/Ipython-datalinter/issues/new).
+
+Recent changes can be found in [CHANGELOG.md](CHANGELOG.md).
+
+## References
+
+[1] https://en.wikipedia.org/wiki/Lint_(software)
