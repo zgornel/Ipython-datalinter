@@ -1,4 +1,5 @@
 import socket
+import ipaddress
 import argparse
 import shlex
 import IPython
@@ -42,7 +43,7 @@ class DataLinterMagic(Magics):
     @staticmethod
     def _parse_add_magic(line):
         try:
-            parser = argparse.ArgumentParser()
+            parser = argparse.ArgumentParser(exit_on_error=False)
             parser.add_argument("--tracked-variable")
             parser.add_argument("--data-header", action='store_true')
             parser.add_argument("--data-delim")
@@ -75,8 +76,9 @@ class DataLinterMagic(Magics):
             tracked_variable = args.tracked_variable
             # ip
             try:
-                ip = socket.inet_aton(args.ip) if args.ip is not None else DEFAULT_IP
-            except socket.error as exc:
+                _ip = ipaddress.ip_address(args.ip) if args.ip is not None else DEFAULT_IP
+                ip = str(_ip)  # return string
+            except Exception as exc:
                 # Not legal
                 raise ValueError(f"The IP '{args.ip!r}' is not valid") from exc
             # port
