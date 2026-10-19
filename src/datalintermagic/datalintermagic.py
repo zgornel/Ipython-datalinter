@@ -224,8 +224,6 @@ class DataLinterMagic(Magics):
         return self.dataframe_to_csv_string(df, header=header, delimiter=delimiter, symbol=symbol)
 
     def dataframe_to_csv_string(self, df, header, delimiter, symbol=None):
-        if df.empty:
-            return ""
         _header = None
         _colnames = list(df.columns)
         _str_colnames = _colnames and all(isinstance(col, str) for col in _colnames)

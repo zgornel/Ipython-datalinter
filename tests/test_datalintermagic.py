@@ -477,7 +477,7 @@ class TestCsvConversion:
     def test_empty_dataframe_is_blank_even_with_header(self, magic):
         empty = pd.DataFrame({"a": pd.Series(dtype="object"), "b": pd.Series(dtype="int")})
         assert empty.empty
-        assert magic.dataframe_to_csv_string(empty, header=True, delimiter=";") == ""
+        assert magic.dataframe_to_csv_string(empty, header=True, delimiter=";") == "a;b\n"
         assert magic.dataframe_to_csv_string(pd.DataFrame(), False, ",") == ""
 
     def test_ndarray_two_dimensions(self, magic, monkeypatch):
@@ -495,7 +495,7 @@ class TestCsvConversion:
         assert_any_contains(displayed, MSG_GENERATED_NAMES)
 
     def test_empty_ndarray(self, magic):
-        assert magic.to_csv_string(np.empty((0, 2)), True, ",") == ""
+        assert magic.to_csv_string(np.empty((0, 2)), True, ",") == "x0,x1\n"
 
     def test_na_rep_is_NA(self, magic):
         frame = pd.DataFrame({"a": [1.0, np.nan]})
