@@ -27,21 +27,29 @@ docker pull ghcr.io/zgornel/datalinter-compiled:latest
 ```
 The command to start the linting server is:
 ```
-docker run -it --rm -p10000:10000 \
+docker run -d --rm -p10000:10000 \
     ghcr.io/zgornel/datalinter-compiled:latest \
         /datalinterserver/bin/datalinterserver \
             -i 0.0.0.0 \
-            --config-path /datalinter/config/default.toml \
-            --log-level debug
+            --config-path /datalinter/config/python_modelling_config.toml \
+            --log-level info
 ```
 If the server starts correctly, it should display something like:
 ```
-Warning: KB file not correctly specified, defaults will be used.
-└ @ datalinterserver /DataLinter/apps/datalinterserver/src/datalinterserver.jl:83
 [ Info: • Data linting server online @0.0.0.0:10000...
-[ Info: Listening on: 0.0.0.0:10000, thread id: 1
 ```
 
+### Quick start
+```ipython
+%reload_ext datalintermagic
+import numpy as np
+X = np.random.random((10,100))
+
+%add --tracked-variable X  --data-header --data-delim ','
+%lintline X --show-stats
+```
+
+Further examples of linter usage in Jupyter are found in this [notebook](https://github.com/zgornel/Ipython-datalinter/blob/main/notebooks/workflow_example.ipynb).
 ## License
 
 This code has an GNU GPLv3 license.
