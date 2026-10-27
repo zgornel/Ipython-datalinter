@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "datalintermagic"
-version = "0.0.2"
+version = "0.0.3"
 description = "Jupyter magic for DataLinter"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -30,4 +30,4 @@ packages = ["datalintermagic"]            # Auto-discovery alternative: use find
 package-dir = {"" = "src"}
 
 [tool.setuptools.package-data]
-"my_package" = ["*.txt", "*.json"]  # Include non-Python files if needed
+"datalintermagic" = ["*.txt", "*.json"]  # Include non-Python files if needed
