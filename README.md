@@ -22,11 +22,11 @@ pip install datalintermagic
 ### DataLinter
 
 [DataLinter](https://github.com/zgornel/DataLinter) installation is done with:
-```
+```bash
 docker pull ghcr.io/zgornel/datalinter-compiled:latest
 ```
 The command to start the linting server is:
-```
+```bash
 docker run -d --rm -p10000:10000 \
     ghcr.io/zgornel/datalinter-compiled:latest \
         /datalinterserver/bin/datalinterserver \
@@ -40,7 +40,7 @@ If the server starts correctly, it should display something like:
 ```
 
 ### Quick start
-```ipython
+```python
 %reload_ext datalintermagic
 import numpy as np
 X = np.random.random((10,100))
