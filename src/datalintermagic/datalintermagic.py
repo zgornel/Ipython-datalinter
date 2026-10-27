@@ -8,7 +8,7 @@ import http.client
 import numpy as np
 
 from IPython.core.magic import Magics, magics_class, line_magic, cell_magic
-from IPython.display import display, Pretty, HTML
+from IPython.display import display, Pretty
 
 
 DEFAULT_IP = "127.0.0.1"
@@ -18,10 +18,12 @@ DEFAULT_DELIMITER = ','
 
 DisplayFormatter = Pretty
 
+
 # New exceptions
 class LinterConnectionError(Exception):
     def __init__(self, message):
         super().__init__(message)
+
 
 class LinterHTTPError(Exception):
     def __init__(self, status, reason, body):
@@ -30,6 +32,7 @@ class LinterHTTPError(Exception):
         self.reason = reason
         self.body = body
 
+
 def _parse_delimiter(value, default=','):
     if value is None:
         return default
@@ -37,18 +40,19 @@ def _parse_delimiter(value, default=','):
         return value
     raise ValueError(f"expected str, got {value!r}")
 
+
 @magics_class
 class DataLinterMagic(Magics):
     def __init__(self, shell):
         super().__init__(shell)
         self.all_tracked_variables = {}  # tracked variables, converted to CSV strings
-        
+
         # Create %add parser
         self.parser_add = argparse.ArgumentParser(exit_on_error=False, add_help=False)
         self.parser_add.add_argument("--tracked-variable")
         self.parser_add.add_argument("--data-header", action='store_true')
         self.parser_add.add_argument("--data-delim")
-        
+
         # Create %lintline and %lintcell parser
         self.parser_lint = argparse.ArgumentParser(exit_on_error=False, add_help=False)
         self.parser_lint.add_argument("tracked_variable", nargs='?', default=None)  # used only when linting lines
@@ -117,7 +121,7 @@ class DataLinterMagic(Magics):
             except Exception as ex:
                 display(DisplayFormatter(f"Warning (Linter): Could not add '{tracked_variable}' to linter data:\n\t{ex}"))
         else:
-            display(DisplayFormatter(f"Warning (Linter): Could not parse line for '%add' magic"))
+            display(DisplayFormatter("Warning (Linter): Could not parse line for '%add' magic"))
         return None
 
     @line_magic
@@ -136,7 +140,7 @@ class DataLinterMagic(Magics):
                 varbody = {
                             'linter_input': {
                                 'context': {
-                                    'data':_data,
+                                    'data': _data,
                                     'data_delim': _delim,
                                     'data_header': _header,
                                     'code': ''},
@@ -160,9 +164,9 @@ class DataLinterMagic(Magics):
                 except Exception as ex:
                     display(DisplayFormatter(f"Warning (Linter): Failed to read linter output:\n\t{ex}"))
             else:
-                display(DisplayFormatter(f"Warning (Linter): '%lintline' magic needs a valid data symbol"))
+                display(DisplayFormatter("Warning (Linter): '%lintline' magic needs a valid data symbol"))
         else:
-            display(DisplayFormatter(f"Warning (Linter): Could not parse line for '%lintline' magic"))
+            display(DisplayFormatter("Warning (Linter): Could not parse line for '%lintline' magic"))
         return None
 
     # Note: It would be interesting to Investigate when to execute the linter (before of after cell execution)
@@ -206,7 +210,7 @@ class DataLinterMagic(Magics):
             except Exception as ex:
                 display(DisplayFormatter(f"Warning (Linter): Failed to read linter output, perhaps linting failed:\n\t{ex}"))
         else:
-            display(DisplayFormatter(f"Warning (Linter): Could not parse line for '%lintcell' magic"))
+            display(DisplayFormatter("Warning (Linter): Could not parse line for '%lintcell' magic"))
         # Always run cell, regardless of linter status
         # Also, one can run with `self.shell.ex(cell)` if one only wants side effects
         result = self.shell.run_cell(cell)
@@ -231,7 +235,7 @@ class DataLinterMagic(Magics):
         if header is True and _str_colnames:
             _header = _colnames
         elif header is True and not _str_colnames:
-            display(DisplayFormatter(f"Warning (Linter): Symbol '{symbol}' will be exported with [x0 ... xN] column names"))
+            display(DisplayFormatter(f"Warning (Linter): Column names of '{symbol}' will be auto-generated as x0,x1..."))
             _header = ['x'+str(i) for i in range(len(df.columns))]
         else:
             # header is False, header not exported to csv
@@ -255,7 +259,6 @@ class DataLinterMagic(Magics):
             response = conn.getresponse()
             raw = response.read()
             status, reason = response.status, response.reason
-            content_type = response.getheader("Content-Type") or ""
         except socket.timeout as ex:
             raise LinterConnectionError(
                 f"Timed out after {timeout}s talking to {connect_host}:{port}"
