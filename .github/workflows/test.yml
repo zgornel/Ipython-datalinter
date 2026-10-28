@@ -31,4 +31,4 @@ jobs:
 
       - name: Run tests with pytest
         run: |
-          pytest -v --tb=short
+          pytest -v --tb=short -p no:warnings
