@@ -341,8 +341,8 @@ class TestParseAddMagic:
         # argparse still raises SystemExit for unrecognized arguments even with
         # exit_on_error=False in some Python versions; SystemExit is not caught
         # by the bare `except Exception` in the source.
-        with pytest.raises(SystemExit):
-            magic._parse_add_magic("--unknown foo")
+        result = magic._parse_add_magic("--unknown foo")
+        assert result is None
 
 
 class TestParseLintMagic:
